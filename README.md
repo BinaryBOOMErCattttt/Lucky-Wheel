@@ -1,4 +1,5 @@
 # Lucky-Wheel
+<<<<<<< HEAD
 
 This is my first repository to practice my coding skill. What's more, I create this program for studying C#, I hope that I can step further in the future. If you are searching out this program by chance, please star it to support me.
 
@@ -14,3 +15,14 @@ This is my first repository to practice my coding skill. What's more, I create t
 - 项目维护与方向把控
 
 AI 始终作为辅助工具使用，最终代码质量与项目责任由本人承担。
+=======
+This is my first repository to practice my coding skill. What's more, I create this program for studying C#, I hope that I can step further in the future.If you are searching out this program by chance， please star it to support me。
+Function：1.BGM-custom
+          2.multi-language support
+          3.multi-animation-mode
+          4.Restart button
+          5.Adjust the ratio freely
+          6.Multiple spinning wheels
+          7.Lottery results output
+          
+>>>>>>> 1dabd927246a33b053158cf19f4850dd28922e04
