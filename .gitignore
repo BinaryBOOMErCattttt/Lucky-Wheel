@@ -1,0 +1,8 @@
+WheelApp.exe
+WheelConfig.dat
+defaultBGM.mid
+lang_en.txt
+lang_zh.txt
+*.user
+bin/
+obj/
