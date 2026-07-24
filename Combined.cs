@@ -289,6 +289,7 @@ namespace WheelApp
         private bool isResetting;
         private float resetTarget;
         private Timer spinTimer;
+        private Timer musicLoopTimer;
         private Label goLabel;
         private static Random rand = new Random();
         private ListBox resultList;
@@ -325,6 +326,11 @@ private bool musicOn;
             lastTick = newTick;
         }
 
+        internal static byte[] GenerateDefaultMidiStatic()
+        {
+            return GenerateDefaultMidi();
+        }
+
         private static byte[] GenerateDefaultMidi()
         {
             List<byte> track = new List<byte>();
@@ -348,17 +354,27 @@ private bool musicOn;
                 AddMidiEv(track, ref t, t + d, new byte[] { 0x80, (byte)note, 0 });
             }
 
-            byte[] arr = track.ToArray();
-            byte[] result = new byte[22 + arr.Length + 4];
-            Buffer.BlockCopy(Encoding.ASCII.GetBytes("MThd"), 0, result, 0, 4);
-            var b = BitConverter.GetBytes(6); Array.Reverse(b); Buffer.BlockCopy(b, 0, result, 4, 4);
-            b = BitConverter.GetBytes((short)0); Array.Reverse(b); Buffer.BlockCopy(b, 0, result, 8, 2);
-            b = BitConverter.GetBytes((short)1); Array.Reverse(b); Buffer.BlockCopy(b, 0, result, 10, 2);
-            b = BitConverter.GetBytes((short)480); Array.Reverse(b); Buffer.BlockCopy(b, 0, result, 12, 2);
-            Buffer.BlockCopy(Encoding.ASCII.GetBytes("MTrk"), 0, result, 14, 4);
-            b = BitConverter.GetBytes(arr.Length + 4); Array.Reverse(b); Buffer.BlockCopy(b, 0, result, 18, 4);
-            Buffer.BlockCopy(arr, 0, result, 22, arr.Length);
-            result[22 + arr.Length] = 0x00; result[23 + arr.Length] = 0xFF; result[24 + arr.Length] = 0x2F; result[25 + arr.Length] = 0x00;
+            byte[] trackData = track.ToArray();
+            int trackLen = trackData.Length + 4;
+            byte[] result = new byte[14 + 8 + trackData.Length + 4];
+            int pos = 0;
+
+            result[pos++] = (byte)'M'; result[pos++] = (byte)'T'; result[pos++] = (byte)'h'; result[pos++] = (byte)'d';
+            result[pos++] = 0; result[pos++] = 0; result[pos++] = 0; result[pos++] = 6;
+            result[pos++] = 0; result[pos++] = 0;
+            result[pos++] = 0; result[pos++] = 1;
+            result[pos++] = (byte)((480 >> 8) & 0xFF); result[pos++] = (byte)(480 & 0xFF);
+
+            result[pos++] = (byte)'M'; result[pos++] = (byte)'T'; result[pos++] = (byte)'r'; result[pos++] = (byte)'k';
+            result[pos++] = (byte)((trackLen >> 24) & 0xFF);
+            result[pos++] = (byte)((trackLen >> 16) & 0xFF);
+            result[pos++] = (byte)((trackLen >> 8) & 0xFF);
+            result[pos++] = (byte)(trackLen & 0xFF);
+
+            Array.Copy(trackData, 0, result, pos, trackData.Length);
+            pos += trackData.Length;
+
+            result[pos++] = 0x00; result[pos++] = 0xFF; result[pos++] = 0x2F; result[pos++] = 0x00;
             return result;
         }
 
@@ -473,7 +489,8 @@ private bool musicOn;
             this.Controls.Add(resetBtn);
 
             musicBtn = new Button();
-            musicBtn.Text = "🎵 " + T("开启背景音乐");
+            musicBtn.Text = MusicLabel();
+            musicBtn.Tag = "开启背景音乐";
             musicBtn.Font = new Font("Microsoft YaHei", 9);
             musicBtn.Size = new Size(130, 24);
             musicBtn.Location = new Point(300, 63);
@@ -496,11 +513,6 @@ private bool musicOn;
             }
             if (otherMusic.Count == 1)
                 customMidiPath = otherMusic[0];
-            if (!File.Exists(Path.Combine(dir, DefaultMidiFile)))
-            {
-                try { File.WriteAllBytes(Path.Combine(dir, DefaultMidiFile), GenerateDefaultMidi()); }
-                catch { }
-            }
 
             Button selectMusicBtn = new Button();
             selectMusicBtn.Text = "选择";
@@ -537,6 +549,10 @@ private bool musicOn;
             spinTimer = new Timer();
             spinTimer.Interval = 16;
             spinTimer.Tick += new EventHandler(SpinTimer_Tick);
+
+            musicLoopTimer = new Timer();
+            musicLoopTimer.Interval = 500;
+            musicLoopTimer.Tick += MusicLoopTimer_Tick;
 
             contextMenu = new ContextMenuStrip();
             newSectorItem = new ToolStripMenuItem("新建片区");
@@ -694,11 +710,14 @@ private void ResetBtn_Click(object sender, EventArgs e)
             if (MessageBox.Show(T("确定重置转盘为初始状态？所有修改和记录将被清除。"), T("确认重置"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
             StopMusic();
-            if (customMidiPath != null)
+            string dir = Path.GetDirectoryName(Application.ExecutablePath);
+            string bgmPath = Path.Combine(dir, DefaultMidiFile);
+            if (!File.Exists(bgmPath))
             {
-                customMidiPath = null;
-                musicBtn.Text = "🎵 " + T("开启背景音乐");
+                try { File.WriteAllBytes(bgmPath, GenerateDefaultMidi()); } catch { }
             }
+            customMidiPath = null;
+            musicBtn.Text = MusicLabel();
             data = originalData.DeepClone();
             currentAngle = 0;
             pointerAngle = startOffset;
@@ -894,7 +913,33 @@ private void ResetBtn_Click(object sender, EventArgs e)
                 if (dlg.ShowDialog() == DialogResult.OK)
                 {
                     StopMusic();
-                    customMidiPath = dlg.FileName;
+                    string dir = Path.GetDirectoryName(Application.ExecutablePath);
+                    string srcFile = dlg.FileName;
+                    string srcName = Path.GetFileName(srcFile);
+                    string destFile = Path.Combine(dir, srcName);
+
+                    if (File.Exists(destFile))
+                    {
+                        int n = 1;
+                        string nameNoExt = Path.GetFileNameWithoutExtension(srcFile);
+                        string ext = Path.GetExtension(srcFile);
+                        while (File.Exists(destFile))
+                        {
+                            destFile = Path.Combine(dir, nameNoExt + "(" + n + ")" + ext);
+                            n++;
+                        }
+                    }
+
+                    try
+                    {
+                        File.Copy(srcFile, destFile, true);
+                        customMidiPath = destFile;
+                    }
+                    catch
+                    {
+                        customMidiPath = srcFile;
+                    }
+
                     musicBtn.Text = MusicLabel();
                     SaveConfig();
                 }
@@ -910,6 +955,7 @@ private void ResetBtn_Click(object sender, EventArgs e)
                 mciSendString("close music", sb, sb.Capacity, IntPtr.Zero);
                 musicOn = false;
                 musicBtn.ForeColor = Color.Black;
+                musicLoopTimer.Stop();
             }
         }
 
@@ -917,7 +963,7 @@ private void ResetBtn_Click(object sender, EventArgs e)
         {
             string label = customMidiPath != null
                 ? Path.GetFileNameWithoutExtension(customMidiPath)
-                : T("背景音乐");
+                : Path.GetFileNameWithoutExtension(DefaultMidiFile);
             return "🎵 " + T("开启") + "(" + label + ")";
         }
 
@@ -932,22 +978,41 @@ private void ResetBtn_Click(object sender, EventArgs e)
             if (!musicOn)
             {
                 string file = MidiFullPath(customMidiPath ?? DefaultMidiFile);
+                if (!File.Exists(file))
+                {
+                    string fallback = MidiFullPath(DefaultMidiFile);
+                    if (File.Exists(fallback))
+                        file = fallback;
+                    else
+                    {
+                        MessageBox.Show(T("找不到音频文件：") + file, T("提示"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
                 StringBuilder sb = new StringBuilder(512);
                 string ext = Path.GetExtension(file).ToLowerInvariant();
                 string mciType = (ext == ".mp3") ? "mpegvideo" : "sequencer";
-                int r = mciSendString("open \"" + file + "\" type " + mciType + " alias music", sb, sb.Capacity, IntPtr.Zero);
-                if (r != 0)
+                int r = -1;
+                for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    mciSendString("close all", sb, sb.Capacity, IntPtr.Zero);
+                    mciSendString("close music", sb, sb.Capacity, IntPtr.Zero);
                     r = mciSendString("open \"" + file + "\" type " + mciType + " alias music", sb, sb.Capacity, IntPtr.Zero);
+                    if (r == 0) break;
+                    System.Threading.Thread.Sleep(200);
                 }
                 if (r == 0)
                 {
-                    string loop = (customMidiPath == null) ? " repeat" : "";
-                    mciSendString("set music volume 1000", sb, sb.Capacity, IntPtr.Zero);
-                    mciSendString("play music" + loop, sb, sb.Capacity, IntPtr.Zero);
+                    mciSendString("set music time format milliseconds", sb, sb.Capacity, IntPtr.Zero);
+                    System.Threading.Thread.Sleep(100);
+                    mciSendString("play music", sb, sb.Capacity, IntPtr.Zero);
                     musicBtn.ForeColor = Color.FromArgb(0xE7, 0x4C, 0x3C);
                     musicOn = true;
+                    if (customMidiPath == null)
+                        musicLoopTimer.Start();
+                }
+                else
+                {
+                    MessageBox.Show(T("无法打开音频设备！") + "\n" + sb.ToString(), T("提示"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
             else
@@ -964,8 +1029,7 @@ private void ResetBtn_Click(object sender, EventArgs e)
             try
             {
                 string config = data.Serialize();
-                if (customMidiPath != null)
-                    config += "MUSIC:" + customMidiPath + "\n";
+                config += "MUSIC:" + (customMidiPath ?? "") + "\n";
                 config += "LANG:" + (english ? "en" : "zh") + "\n";
                 File.WriteAllText(ConfigFile, config);
             }
@@ -987,9 +1051,14 @@ private void ResetBtn_Click(object sender, EventArgs e)
                         if (line.StartsWith("MIDI:") || line.StartsWith("MUSIC:"))
                         {
                             string mp = line.Substring(line.StartsWith("MUSIC:") ? 6 : 5).Trim();
-                            if (File.Exists(mp))
+                            if (mp.Length > 0 && File.Exists(mp))
                             {
                                 customMidiPath = mp;
+                                musicBtn.Text = MusicLabel();
+                            }
+                            else
+                            {
+                                customMidiPath = null;
                                 musicBtn.Text = MusicLabel();
                             }
                         }
@@ -1014,6 +1083,15 @@ private void ResetBtn_Click(object sender, EventArgs e)
                 ApplyLang();
             }
             savedEnglish = english;
+        }
+
+        public void ValidateMusicPath()
+        {
+            if (customMidiPath != null && !File.Exists(customMidiPath))
+            {
+                customMidiPath = null;
+                musicBtn.Text = MusicLabel();
+            }
         }
 
         private void UpdateModeLabel()
@@ -1368,6 +1446,27 @@ private void ResetBtn_Click(object sender, EventArgs e)
             else
                 targetPointerAngle = pointerAngle + rand.Next(1200, 2400);
             spinTimer.Start();
+        }
+
+        private void MusicLoopTimer_Tick(object sender, EventArgs e)
+        {
+            if (!musicOn) { musicLoopTimer.Stop(); return; }
+            StringBuilder sb = new StringBuilder(128);
+            mciSendString("status music mode", sb, sb.Capacity, IntPtr.Zero);
+            string mode = sb.ToString().Trim().ToLower();
+            if (mode == "stopped" || mode == "")
+            {
+                string file = MidiFullPath(customMidiPath ?? DefaultMidiFile);
+                if (File.Exists(file))
+                {
+                    mciSendString("close music", sb, sb.Capacity, IntPtr.Zero);
+                    string ext = Path.GetExtension(file).ToLowerInvariant();
+                    string mciType = (ext == ".mp3") ? "mpegvideo" : "sequencer";
+                    mciSendString("open \"" + file + "\" type " + mciType + " alias music", sb, sb.Capacity, IntPtr.Zero);
+                    mciSendString("set music time format milliseconds", sb, sb.Capacity, IntPtr.Zero);
+                    mciSendString("play music", sb, sb.Capacity, IntPtr.Zero);
+                }
+            }
         }
 
         private void SpinTimer_Tick(object sender, EventArgs e)
@@ -1911,6 +2010,34 @@ private void ResetBtn_Click(object sender, EventArgs e)
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
+            string appDir = Path.GetDirectoryName(Application.ExecutablePath);
+            string openedFile = Path.Combine(appDir, "opened");
+            bool isFirstRun = !File.Exists(openedFile);
+
+            if (isFirstRun)
+            {
+                try
+                {
+                    string bgmPath = Path.Combine(appDir, "defaultBGM.mid");
+                    if (!File.Exists(bgmPath))
+                        File.WriteAllBytes(bgmPath, WheelForm.GenerateDefaultMidiStatic());
+                    File.WriteAllText(openedFile, DateTime.Now.ToString("o"));
+                }
+                catch { }
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = Application.ExecutablePath,
+                        UseShellExecute = true
+                    });
+                    System.Threading.Thread.Sleep(125);
+                }
+                catch { }
+                Environment.Exit(0);
+                return;
+            }
+
             string[] defaultPrizes = new string[] { "奖励一", "奖励二", "奖励三", "奖励四", "奖励五", "奖励六" };
             Color[] defaultColors = new Color[]
             {
@@ -1921,6 +2048,7 @@ private void ResetBtn_Click(object sender, EventArgs e)
 
             WheelForm mainForm = new WheelForm(data, "幸运转盘 (父转盘)");
             mainForm.LoadConfig();
+            mainForm.ValidateMusicPath();
             Application.Run(mainForm);
         }
     }
